@@ -118,6 +118,30 @@ bool isPathUpdated(
 bool isGoalUpdated(
   nav_msgs::msg::Path & new_path,
   nav_msgs::msg::Path & old_path);
+
+/**
+ * @brief Computes the discrete Frechet distance between two paths in the XY plane
+ *
+ * The Frechet distance measures how similar two curves are while respecting the
+ * order of their poses. Unlike the Hausdorff distance, it distinguishes a path from
+ * the same path traversed in the opposite direction. It can be used to decide whether
+ * a newly planned path is a meaningfully different route from the one being followed.
+ *
+ * Both paths can be downsampled so that consecutive poses kept for the comparison are
+ * at least min_spacing apart, bounding the O(n * m) cost for densely sampled paths.
+ * The first and last poses are always kept. Memory usage is O(m). Orientation and z
+ * are ignored, and both paths are assumed to be expressed in the same frame.
+ *
+ * @param path_a First path
+ * @param path_b Second path
+ * @param min_spacing Minimum distance (m) between poses kept for the comparison,
+ *        values <= 0 keep every pose
+ * @return The discrete Frechet distance in meters, or infinity if either path is empty
+ */
+double discreteFrechetDistance(
+  const nav_msgs::msg::Path & path_a,
+  const nav_msgs::msg::Path & path_b,
+  const double min_spacing = 0.0);
 }  // namespace nav2_util
 
 #endif  // NAV2_UTIL__PATH_UTILS_HPP_

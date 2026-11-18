@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <algorithm>
 #include <cmath>
 #include <limits>
 #include <vector>
@@ -676,4 +677,101 @@ TEST(UtilsTests, IsPathOrGoalUpdatedTest)
   new_path.poses.push_back(makePose(2.0, 2.0));
   EXPECT_FALSE(nav2_util::isPathUpdated(old_path, new_path));
   EXPECT_TRUE(nav2_util::isGoalUpdated(old_path, new_path));
+}
+
+nav_msgs::msg::Path makeStraightPath(
+  double x0, double y0, double x1, double y1, double step)
+{
+  nav_msgs::msg::Path path;
+  const double length = std::hypot(x1 - x0, y1 - y0);
+  const int segments = std::max(1, static_cast<int>(std::round(length / step)));
+  for (int i = 0; i <= segments; ++i) {
+    const double t = static_cast<double>(i) / segments;
+    path.poses.push_back(createPoseStamped(x0 + t * (x1 - x0), y0 + t * (y1 - y0)));
+  }
+  return path;
+}
+
+TEST(FrechetDistanceTest, EmptyPathReturnsInfinity)
+{
+  nav_msgs::msg::Path empty;
+  auto path = makeStraightPath(0.0, 0.0, 5.0, 0.0, 0.1);
+  EXPECT_TRUE(std::isinf(nav2_util::discreteFrechetDistance(empty, path)));
+  EXPECT_TRUE(std::isinf(nav2_util::discreteFrechetDistance(path, empty)));
+  EXPECT_TRUE(std::isinf(nav2_util::discreteFrechetDistance(empty, empty)));
+}
+
+TEST(FrechetDistanceTest, IdenticalPathsHaveZeroDistance)
+{
+  auto path = makeStraightPath(0.0, 0.0, 5.0, 2.0, 0.05);
+  EXPECT_NEAR(nav2_util::discreteFrechetDistance(path, path), 0.0, 1e-9);
+}
+
+TEST(FrechetDistanceTest, SinglePosePaths)
+{
+  nav_msgs::msg::Path a, b;
+  a.poses.push_back(createPoseStamped(0.0, 0.0));
+  b.poses.push_back(createPoseStamped(3.0, 4.0));
+  EXPECT_NEAR(nav2_util::discreteFrechetDistance(a, b), 5.0, 1e-9);
+}
+
+TEST(FrechetDistanceTest, ParallelOffsetEqualsOffset)
+{
+  auto a = makeStraightPath(0.0, 0.0, 5.0, 0.0, 0.1);
+  auto b = makeStraightPath(0.0, 0.5, 5.0, 0.5, 0.1);
+  EXPECT_NEAR(nav2_util::discreteFrechetDistance(a, b), 0.5, 1e-9);
+}
+
+TEST(FrechetDistanceTest, IsSymmetric)
+{
+  auto a = makeStraightPath(0.0, 0.0, 5.0, 0.0, 0.1);
+  auto b = makeStraightPath(0.0, 1.0, 4.0, 3.0, 0.07);
+  EXPECT_NEAR(
+    nav2_util::discreteFrechetDistance(a, b),
+    nav2_util::discreteFrechetDistance(b, a), 1e-9);
+}
+
+TEST(FrechetDistanceTest, ReversedPathIsNotSimilar)
+{
+  // Same set of points traversed in opposite directions: Hausdorff distance would be 0,
+  // but the Frechet distance must reflect the different direction of travel
+  auto forward = makeStraightPath(0.0, 0.0, 5.0, 0.0, 0.1);
+  auto backward = makeStraightPath(5.0, 0.0, 0.0, 0.0, 0.1);
+  EXPECT_NEAR(nav2_util::discreteFrechetDistance(forward, backward), 5.0, 1e-9);
+}
+
+TEST(FrechetDistanceTest, DifferentLengthsCompareEndpoints)
+{
+  auto long_path = makeStraightPath(0.0, 0.0, 5.0, 0.0, 0.1);
+  auto short_path = makeStraightPath(0.0, 0.0, 3.0, 0.0, 0.1);
+  EXPECT_NEAR(nav2_util::discreteFrechetDistance(long_path, short_path), 2.0, 1e-9);
+}
+
+TEST(FrechetDistanceTest, DetourDistanceMatchesLateralDeviation)
+{
+  // Straight path vs. a path that detours 2 m sideways around an obstacle
+  auto straight = makeStraightPath(0.0, 0.0, 10.0, 0.0, 0.1);
+  nav_msgs::msg::Path detour = makeStraightPath(0.0, 0.0, 3.0, 2.0, 0.1);
+  auto middle = makeStraightPath(3.0, 2.0, 7.0, 2.0, 0.1);
+  auto end = makeStraightPath(7.0, 2.0, 10.0, 0.0, 0.1);
+  detour.poses.insert(detour.poses.end(), middle.poses.begin() + 1, middle.poses.end());
+  detour.poses.insert(detour.poses.end(), end.poses.begin() + 1, end.poses.end());
+  EXPECT_NEAR(nav2_util::discreteFrechetDistance(straight, detour), 2.0, 0.05);
+}
+
+TEST(FrechetDistanceTest, DownsamplingPreservesResult)
+{
+  auto dense_a = makeStraightPath(0.0, 0.0, 20.0, 0.0, 0.01);
+  auto dense_b = makeStraightPath(0.0, 0.3, 20.0, 0.3, 0.01);
+  EXPECT_NEAR(nav2_util::discreteFrechetDistance(dense_a, dense_b, 0.25), 0.3, 1e-9);
+  EXPECT_NEAR(nav2_util::discreteFrechetDistance(dense_a, dense_a, 0.25), 0.0, 1e-9);
+}
+
+TEST(FrechetDistanceTest, DownsamplingKeepsFinalPose)
+{
+  // A final pose closer than min_spacing to the previous kept pose must still be compared
+  auto a = makeStraightPath(0.0, 0.0, 5.0, 0.0, 1.0);
+  auto b = makeStraightPath(0.0, 0.0, 5.0, 0.0, 1.0);
+  b.poses.push_back(createPoseStamped(5.0, 0.4));
+  EXPECT_NEAR(nav2_util::discreteFrechetDistance(a, b, 1.0), 0.4, 1e-9);
 }

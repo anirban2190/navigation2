@@ -14,9 +14,12 @@
 
 #include "nav2_util/path_utils.hpp"
 
-#include <limits>
+#include <algorithm>
 #include <cmath>
+#include <limits>
 #include <stdexcept>
+#include <utility>
+#include <vector>
 
 #include "nav2_util/geometry_utils.hpp"
 #include "nav2_ros_common/tf2_factories.hpp"
@@ -247,6 +250,80 @@ bool isGoalUpdated(
   return old_path.poses.size() != 0 &&
          new_path.poses.size() != 0 &&
          new_path.poses.back().pose.position != old_path.poses.back().pose.position;
+}
+
+namespace
+{
+
+/**
+ * @brief Extracts the XY positions of a path, dropping poses closer than min_spacing
+ * to the previously kept one. The first and last poses are always kept.
+ * @param path Non-empty path to downsample
+ * @param min_spacing Minimum spacing (m) between kept poses, values <= 0 keep every pose
+ * @return Kept positions, in path order
+ */
+std::vector<geometry_msgs::msg::Point> downsamplePath(
+  const nav_msgs::msg::Path & path,
+  const double min_spacing)
+{
+  std::vector<geometry_msgs::msg::Point> points;
+  points.reserve(path.poses.size());
+  for (const auto & pose : path.poses) {
+    const auto & position = pose.pose.position;
+    if (points.empty() || min_spacing <= 0.0 ||
+      std::hypot(position.x - points.back().x, position.y - points.back().y) >= min_spacing)
+    {
+      points.push_back(position);
+    }
+  }
+
+  // Always keep the final pose so that path endpoints are compared exactly
+  const auto & last = path.poses.back().pose.position;
+  if (points.back().x != last.x || points.back().y != last.y) {
+    points.push_back(last);
+  }
+  return points;
+}
+
+}  // namespace
+
+double discreteFrechetDistance(
+  const nav_msgs::msg::Path & path_a,
+  const nav_msgs::msg::Path & path_b,
+  const double min_spacing)
+{
+  if (path_a.poses.empty() || path_b.poses.empty()) {
+    return std::numeric_limits<double>::infinity();
+  }
+
+  const auto points_a = downsamplePath(path_a, min_spacing);
+  const auto points_b = downsamplePath(path_b, min_spacing);
+
+  auto distance = [](const geometry_msgs::msg::Point & p, const geometry_msgs::msg::Point & q) {
+      return std::hypot(p.x - q.x, p.y - q.y);
+    };
+
+  // Dynamic programming over the coupling matrix, keeping only two rows
+  std::vector<double> previous_row(points_b.size());
+  std::vector<double> current_row(points_b.size());
+  for (size_t i = 0; i < points_a.size(); ++i) {
+    for (size_t j = 0; j < points_b.size(); ++j) {
+      const double d = distance(points_a[i], points_b[j]);
+      if (i == 0 && j == 0) {
+        current_row[j] = d;
+      } else if (i == 0) {
+        current_row[j] = std::max(current_row[j - 1], d);
+      } else if (j == 0) {
+        current_row[j] = std::max(previous_row[j], d);
+      } else {
+        current_row[j] = std::max(
+          std::min({previous_row[j], previous_row[j - 1], current_row[j - 1]}), d);
+      }
+    }
+    std::swap(previous_row, current_row);
+  }
+
+  return previous_row.back();
 }
 
 }  // namespace nav2_util
